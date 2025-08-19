@@ -6,7 +6,9 @@ from typing import Optional
 class PersonTransformer:
     """Simple Person transformer with hardcoded concept mappings"""
     
-    def __init__(self):
+    def __init__(self, db_manager=None):
+        self.db_manager = db_manager  # Add this line
+        
         # Hardcoded OMOP concept mappings (these are standard and won't change)
         self.gender_concepts = {
             'M': 8507,      # MALE
@@ -65,6 +67,9 @@ class PersonTransformer:
         race_concept_id = self._map_race(patient.get('RACE', ''))
         ethnicity_concept_id = self._map_ethnicity(patient.get('ETHNICITY', ''))
         
+        # Lookup location_id based on patient address
+        location_id = self._lookup_location_id(patient) if self.db_manager else None
+        
         # Create OMOP person record
         return {
             'person_id': person_id,
@@ -75,7 +80,7 @@ class PersonTransformer:
             'birth_datetime': birth_date,
             'race_concept_id': race_concept_id,
             'ethnicity_concept_id': ethnicity_concept_id,
-            'location_id': None,
+            'location_id': location_id,  # Now populated!
             'provider_id': None,
             'care_site_id': None,
             'person_source_value': patient['Id'],
@@ -85,8 +90,43 @@ class PersonTransformer:
             'race_source_concept_id': 0,
             'ethnicity_source_value': str(patient.get('ETHNICITY', '')),
             'ethnicity_source_concept_id': 0,
-            
         }
+    
+    def _lookup_location_id(self, patient: pd.Series) -> Optional[int]:
+        """Lookup location_id based on patient address"""
+        # Check if patient has address data
+        required_address_fields = ['ADDRESS', 'CITY', 'STATE', 'ZIP']
+        if not all(field in patient.index for field in required_address_fields):
+            return None
+            
+        # Truncate address fields to match what we stored in location table
+        address = str(patient['ADDRESS'])[:50]
+        city = str(patient['CITY'])[:50]
+        state = str(patient['STATE'])[:2]
+        zip_code = str(patient['ZIP']).zfill(5)[:5]
+        
+        query = f"""
+            SELECT location_id FROM {self.db_manager.config.schema_cdm}.location
+            WHERE address_1 = %(address)s
+              AND city = %(city)s
+              AND state = %(state)s
+              AND zip = %(zip)s
+            LIMIT 1
+        """
+        try:
+            result = self.db_manager.execute_query(query, {
+                "address": address,
+                "city": city,
+                "state": state,
+                "zip": zip_code
+            })
+
+            if not result.empty:
+                return result.iloc[0]["location_id"]
+            else:
+                return None
+        except Exception:
+            return None
     
     def _parse_date(self, date_str: str) -> Optional[datetime]:
         """Parse DD/MM/YYYY date format"""
