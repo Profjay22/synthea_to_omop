@@ -57,11 +57,12 @@ class SyntheaToOMOPPipeline:
                 elif table == 'provider':
                     success = self._process_provider_table()
                 elif table == 'visit_occurrence':
-                    self.logger.info("🔄 Visit occurrence processing - Coming soon!")
-                    continue
+                    success = self._process_visit_occurrence_table()
+                elif table == 'update_person':
+                    success = self._update_person_assignments()
                 elif table == 'condition_occurrence':
-                    self.logger.info("🔄 Condition occurrence processing - Coming soon!")
-                    continue
+                    success = self._process_condition_occurrence_table()
+
                 else:
                     self.logger.warning(f"⚠️ Table {table} not implemented yet")
                     continue
@@ -267,6 +268,99 @@ class SyntheaToOMOPPipeline:
             self.stats['errors'].append(f"Provider: {str(e)}")
             return False
 
+    def _process_visit_occurrence_table(self) -> bool:
+            """Process visit_occurrence table from encounter data"""
+            try:
+                self.clear_visit_occurrence_table()
+                self.logger.info("📥 Extracting encounter data...")
+                encounters_df = self.extractor.get_encounters()
+
+                if encounters_df.empty:
+                    self.logger.error("❌ No encounter data found")
+                    return False
+
+                self.logger.info(f"✅ Extracted {len(encounters_df)} encounters")
+
+                from src.transformers.visit_occurrence_transformer import VisitOccurrenceTransformer
+                transformer = VisitOccurrenceTransformer()
+                omop_visits = transformer.transform(encounters_df)
+
+                if omop_visits.empty:
+                    self.logger.error("❌ No visit occurrences after transformation")
+                    return False
+
+                self.logger.info(f"✅ Transformed to {len(omop_visits)} visit occurrences")
+
+                from src.loaders.visit_occurrence_loader import VisitOccurrenceLoader
+                loader = VisitOccurrenceLoader(self.db_manager)
+
+                if not loader.load_visit_occurrences(omop_visits, batch_size=100):  # Smaller batch size
+                    return False
+
+                loader.verify_data()
+                return True
+
+            except Exception as e:
+                self.logger.error(f"❌ Visit occurrence table processing failed: {e}")
+                self.stats['errors'].append(f"Visit occurrence: {str(e)}")
+                return False
+    
+    def _update_person_assignments(self) -> bool:
+        """Update person table with provider and care site assignments from visit data"""
+        try:
+            self.logger.info("🔄 Updating person assignments from visit data...")
+            
+            from src.updaters.person_assignment_updater import PersonAssignmentUpdater
+            updater = PersonAssignmentUpdater(self.db_manager)
+            
+            if not updater.update_assignments():
+                self.logger.error("❌ Failed to update person assignments")
+                return False
+            
+            self.logger.info("✅ Person assignments updated successfully")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Person assignment update failed: {e}")
+            self.stats['errors'].append(f"Person update: {str(e)}")
+            return False
+    def _process_condition_occurrence_table(self) -> bool:
+        """Process condition_occurrence table from condition data"""
+        try:
+            self.clear_condition_occurrence_table()
+            self.logger.info("📥 Extracting condition data...")
+            conditions_df = self.extractor.get_conditions()
+
+            if conditions_df.empty:
+                self.logger.error("❌ No condition data found")
+                return False
+
+            self.logger.info(f"✅ Extracted {len(conditions_df)} conditions")
+
+            from src.transformers.condition_occurrence_transformer import ConditionOccurrenceTransformer
+            transformer = ConditionOccurrenceTransformer(self.db_manager)
+            omop_conditions = transformer.transform(conditions_df)
+
+            if omop_conditions.empty:
+                self.logger.error("❌ No condition occurrences after transformation")
+                return False
+
+            self.logger.info(f"✅ Transformed to {len(omop_conditions)} condition occurrences")
+
+            from src.loaders.condition_occurrence_loader import ConditionOccurrenceLoader
+            loader = ConditionOccurrenceLoader(self.db_manager)
+
+            if not loader.load_condition_occurrences(omop_conditions, batch_size=100):
+                return False
+
+            loader.verify_data()
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Condition occurrence table processing failed: {e}")
+            self.stats['errors'].append(f"Condition occurrence: {str(e)}")
+            return False
+
     def _show_sample_patient(self, patients_df):
         sample = patients_df.iloc[0]
         self.logger.info("📋 Sample source patient:")
@@ -345,7 +439,30 @@ class SyntheaToOMOPPipeline:
             self.logger.info("✅ Provider table cleared")
         except Exception as e:
             self.logger.error(f"❌ Clear failed: {e}")
+    
+    def clear_visit_occurrence_table(self):
+            self.logger.info("🧹 Clearing visit_occurrence table...")
+            try:
+                schema = self.db_config.schema_cdm
+                with self.db_manager.engine.begin() as conn:
+                    # Use DELETE instead of TRUNCATE to avoid foreign key issues
+                    conn.execute(text(f"DELETE FROM {schema}.visit_occurrence"))
+                self.logger.info("✅ Visit occurrence table cleared")
+            except Exception as e:
+                self.logger.error(f"❌ Clear failed: {e}")
+    
+    def clear_condition_occurrence_table(self):
+            self.logger.info("🧹 Clearing condition_occurrence table...")
+            try:
+                schema = self.db_config.schema_cdm
+                with self.db_manager.engine.begin() as conn:
+                    # Use DELETE instead of TRUNCATE to avoid foreign key issues
+                    conn.execute(text(f"DELETE FROM {schema}.condition_occurrence"))
+                self.logger.info("✅ Condition occurrence table cleared")
+            except Exception as e:
+                self.logger.error(f"❌ Clear failed: {e}")
 
+    
 def main():
     parser = argparse.ArgumentParser(description='Synthea to OMOP ETL Pipeline')
     parser.add_argument('--test', action='store_true', help='Run in test mode (small sample)')
