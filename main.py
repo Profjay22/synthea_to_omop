@@ -11,6 +11,7 @@ from config.database import DatabaseConfig
 from src.database.connection import DatabaseManager
 from src.extractors.synthea_extractor import SyntheaExtractor
 from src.utils.logging import setup_logging
+import pandas as pd
 
 from src.transformers.person_transformer import PersonTransformer
 from src.loaders.person_loader import PersonLoader
@@ -61,8 +62,10 @@ class SyntheaToOMOPPipeline:
                 elif table == 'update_person':
                     success = self._update_person_assignments()
                 elif table == 'condition_occurrence':
-                    success = self._process_condition_occurrence_table()
-
+                    success = self._process_condition_occurrence_table()     
+                elif table == 'observation':
+                    success = self._process_observation_table()
+                # Also add to the run_pipeline method:
                 else:
                     self.logger.warning(f"⚠️ Table {table} not implemented yet")
                     continue
@@ -360,6 +363,118 @@ class SyntheaToOMOPPipeline:
             self.logger.error(f"❌ Condition occurrence table processing failed: {e}")
             self.stats['errors'].append(f"Condition occurrence: {str(e)}")
             return False
+    def _process_observation_table(self) -> bool:
+        """Process observation table from observation data and excluded condition data"""
+        try:
+            self.clear_observation_table()
+            
+            all_observations = []
+            
+            # Process observation source data
+            self.logger.info("📥 Extracting observation data...")
+            observations_df = self.extractor.get_observations()
+            
+            if not observations_df.empty:
+                self.logger.info(f"✅ Extracted {len(observations_df)} observation records")
+                
+                from src.transformers.observation_transformer import ObservationTransformer
+                transformer = ObservationTransformer(self.db_manager)
+                
+                omop_observations = transformer.transform_observations(observations_df)
+                if not omop_observations.empty:
+                    all_observations.append(omop_observations)
+                    self.logger.info(f"✅ Transformed {len(omop_observations)} observation records")
+            
+            # Process excluded condition data (records that should be observations)
+            self.logger.info("📥 Extracting excluded condition data for observations...")
+            conditions_df = self.extractor.get_conditions()
+            
+            if not conditions_df.empty:
+                # Get conditions that were excluded from condition_occurrence
+                excluded_conditions = self._get_excluded_conditions(conditions_df)
+                
+                if not excluded_conditions.empty:
+                    self.logger.info(f"✅ Found {len(excluded_conditions)} excluded conditions to process as observations")
+                    
+                    transformer = ObservationTransformer(self.db_manager)
+                    omop_excluded_obs = transformer.transform_excluded_conditions(excluded_conditions)
+                    
+                    if not omop_excluded_obs.empty:
+                        all_observations.append(omop_excluded_obs)
+                        self.logger.info(f"✅ Transformed {len(omop_excluded_obs)} excluded conditions to observations")
+            
+            # Combine all observation data
+            if not all_observations:
+                self.logger.error("❌ No observation data to process")
+                return False
+            
+            combined_observations = pd.concat(all_observations, ignore_index=True)
+            self.logger.info(f"✅ Combined total: {len(combined_observations)} observation records")
+            
+            # Load to database
+            from src.loaders.observation_loader import ObservationLoader
+            loader = ObservationLoader(self.db_manager)
+
+            if not loader.load_observations(combined_observations, batch_size=50):
+                return False
+
+            loader.verify_data()
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Observation table processing failed: {e}")
+            self.stats['errors'].append(f"Observation: {str(e)}")
+            return False
+        
+    def _get_excluded_conditions(self, conditions_df: pd.DataFrame) -> pd.DataFrame:
+        """Get condition records that were excluded from condition_occurrence (should be observations)"""
+        try:
+            if not self.db_manager:
+                return pd.DataFrame()
+            
+            # Get unique SNOMED codes from conditions
+            unique_codes = conditions_df['CODE'].unique()
+            code_list = "', '".join(unique_codes.astype(str))
+            
+            # Find codes that are NOT in Condition domain (should be observations)
+            excluded_codes_query = f"""
+            SELECT DISTINCT 
+                c.concept_code,
+                c.concept_id,
+                c.concept_name,
+                c.domain_id,
+                c.vocabulary_id
+            FROM {self.db_manager.config.schema_cdm}.concept c
+            WHERE c.concept_code IN ('{code_list}')
+              AND c.vocabulary_id = 'SNOMED'
+              AND c.domain_id != 'Condition'
+              AND c.domain_id = 'Observation'
+              AND c.invalid_reason IS NULL
+            """
+            
+            excluded_codes = self.db_manager.execute_query(excluded_codes_query)
+            
+            if excluded_codes.empty:
+                self.logger.info("ℹ️ No condition codes found that should be observations")
+                return pd.DataFrame()
+            
+            self.logger.info(f"📊 Found {len(excluded_codes)} condition codes that belong in Observation domain:")
+            for _, code_info in excluded_codes.head(3).iterrows():
+                self.logger.info(f"  {code_info['concept_code']}: {code_info['concept_name']}")
+            
+            # Filter conditions to only those that should be observations
+            excluded_codes_set = set(excluded_codes['concept_code'].astype(str))
+            excluded_conditions = conditions_df[
+                conditions_df['CODE'].astype(str).isin(excluded_codes_set)
+            ]
+            
+            return excluded_conditions
+            
+        except Exception as e:
+            self.logger.error(f"⚠️ Error getting excluded conditions: {e}")
+            return pd.DataFrame()
+    
+
 
     def _show_sample_patient(self, patients_df):
         sample = patients_df.iloc[0]
@@ -461,6 +576,17 @@ class SyntheaToOMOPPipeline:
                 self.logger.info("✅ Condition occurrence table cleared")
             except Exception as e:
                 self.logger.error(f"❌ Clear failed: {e}")
+    
+    def clear_observation_table(self):
+        self.logger.info("🧹 Clearing observation table...")
+        try:
+            schema = self.db_config.schema_cdm
+            with self.db_manager.engine.begin() as conn:
+                # Use DELETE instead of TRUNCATE to avoid foreign key issues
+                conn.execute(text(f"DELETE FROM {schema}.observation"))
+            self.logger.info("✅ Observation table cleared")
+        except Exception as e:
+            self.logger.error(f"❌ Clear failed: {e}")
 
     
 def main():
