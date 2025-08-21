@@ -65,6 +65,8 @@ class SyntheaToOMOPPipeline:
                     success = self._process_condition_occurrence_table()     
                 elif table == 'observation':
                     success = self._process_observation_table()
+                elif table == 'observation_period':
+                    success = self._process_observation_period_table()
                 # Also add to the run_pipeline method:
                 else:
                     self.logger.warning(f"⚠️ Table {table} not implemented yet")
@@ -474,7 +476,37 @@ class SyntheaToOMOPPipeline:
             self.logger.error(f"⚠️ Error getting excluded conditions: {e}")
             return pd.DataFrame()
     
+    def _process_observation_period_table(self) -> bool:
+        """Process observation_period table by calculating periods from all source data"""
+        try:
+            self.clear_observation_period_table()
+            self.logger.info("🔄 Calculating observation periods from all source data...")
+            
+            from src.transformers.observation_period_transformer import ObservationPeriodTransformer
+            transformer = ObservationPeriodTransformer(self.extractor)
+            
+            observation_periods = transformer.transform()
+            
+            if observation_periods.empty:
+                self.logger.error("❌ No observation periods calculated")
+                return False
 
+            self.logger.info(f"✅ Calculated {len(observation_periods)} observation periods")
+
+            from src.loaders.observation_period_loader import ObservationPeriodLoader
+            loader = ObservationPeriodLoader(self.db_manager)
+
+            if not loader.load_observation_periods(observation_periods, batch_size=500):
+                return False
+
+            loader.verify_data()
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Observation period table processing failed: {e}")
+            self.stats['errors'].append(f"Observation period: {str(e)}")
+            return False
+    
 
     def _show_sample_patient(self, patients_df):
         sample = patients_df.iloc[0]
@@ -585,6 +617,17 @@ class SyntheaToOMOPPipeline:
                 # Use DELETE instead of TRUNCATE to avoid foreign key issues
                 conn.execute(text(f"DELETE FROM {schema}.observation"))
             self.logger.info("✅ Observation table cleared")
+        except Exception as e:
+            self.logger.error(f"❌ Clear failed: {e}")
+    
+    def clear_observation_period_table(self):
+        self.logger.info("🧹 Clearing observation_period table...")
+        try:
+            schema = self.db_config.schema_cdm
+            with self.db_manager.engine.begin() as conn:
+                # Use DELETE instead of TRUNCATE to avoid foreign key issues
+                conn.execute(text(f"DELETE FROM {schema}.observation_period"))
+            self.logger.info("✅ Observation period table cleared")
         except Exception as e:
             self.logger.error(f"❌ Clear failed: {e}")
 
