@@ -69,6 +69,8 @@ class SyntheaToOMOPPipeline:
                     success = self._process_observation_period_table()
                 elif table == 'procedure_occurrence':
                     success = self._process_procedure_occurrence_table()
+                elif table == 'death':
+                    success = self._process_death_table()
                 # Also add to the run_pipeline method:
                 else:
                     self.logger.warning(f"⚠️ Table {table} not implemented yet")
@@ -565,8 +567,56 @@ class SyntheaToOMOPPipeline:
             self.logger.error(f"❌ Procedure occurrence table processing failed: {e}")
             self.stats['errors'].append(f"Procedure occurrence: {str(e)}")
             return False
-
     
+    def _process_death_table(self) -> bool:
+        """Process death table from patient and observation data"""
+        try:
+            self.clear_death_table()
+            
+            # Extract patient data (needed for death dates)
+            self.logger.info("📥 Extracting patient data for deaths...")
+            patients_df = self.extractor.get_patients()
+            
+            if patients_df.empty:
+                self.logger.error("❌ No patient data found")
+                return False
+            
+            # Extract observation data (needed for death certificates)
+            self.logger.info("📥 Extracting observation data for death certificates...")
+            observations_df = self.extractor.get_observations()
+            
+            if observations_df.empty:
+                self.logger.warning("⚠️ No observation data found - will process deaths without certificate info")
+                observations_df = pd.DataFrame()  # Empty dataframe for transformer
+            
+            self.logger.info(f"✅ Extracted {len(patients_df)} patients and {len(observations_df)} observations")
+            
+            # Transform death data
+            from src.transformers.death_transformer import DeathTransformer
+            transformer = DeathTransformer(self.db_manager)
+            
+            omop_deaths = transformer.transform(patients_df, observations_df)
+            
+            if omop_deaths.empty:
+                self.logger.error("❌ No death records after transformation")
+                return False
+            
+            self.logger.info(f"✅ Transformed {len(omop_deaths)} death records")
+            
+            # Load to database
+            from src.loaders.death_loader import DeathLoader
+            loader = DeathLoader(self.db_manager)
+            
+            if not loader.load_deaths(omop_deaths, batch_size=500):
+                return False
+            
+            loader.verify_data()
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Death table processing failed: {e}")
+            self.stats['errors'].append(f"Death: {str(e)}")
+            return False
 
     def _show_sample_patient(self, patients_df):
         sample = patients_df.iloc[0]
@@ -699,6 +749,17 @@ class SyntheaToOMOPPipeline:
                 # Use DELETE instead of TRUNCATE to avoid foreign key issues
                 conn.execute(text(f"DELETE FROM {schema}.procedure_occurrence"))
             self.logger.info("✅ Procedure occurrence table cleared")
+        except Exception as e:
+            self.logger.error(f"❌ Clear failed: {e}")
+    
+    def clear_death_table(self):
+        self.logger.info("🧹 Clearing death table...")
+        try:
+            schema = self.db_config.schema_cdm
+            with self.db_manager.engine.begin() as conn:
+                # Use DELETE instead of TRUNCATE to avoid foreign key issues
+                conn.execute(text(f"DELETE FROM {schema}.death"))
+            self.logger.info("✅ Death table cleared")
         except Exception as e:
             self.logger.error(f"❌ Clear failed: {e}")
 
