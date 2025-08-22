@@ -282,8 +282,10 @@ class ObservationPeriodTransformer:
         # Convert person_id to OMOP person_id using UUID converter
         person_periods['omop_person_id'] = person_periods['person_id'].apply(UUIDConverter.person_id)
         
-        # Generate observation_period_id
-        person_periods['observation_period_id'] = range(1, len(person_periods) + 1)
+        # Generate deterministic observation_period_id based on person_id
+        person_periods['observation_period_id'] = person_periods['person_id'].apply(
+            lambda x: UUIDConverter.generic_id(f"obs_period_{x}")
+        )
         
         # Add period type
         person_periods['period_type_concept_id'] = self.period_type_concept_id
@@ -297,6 +299,7 @@ class ObservationPeriodTransformer:
             'period_type_concept_id'
         ]].rename(columns={'omop_person_id': 'person_id'})
         
+        print(f"📊 Generated deterministic observation_period_id for {len(result_df)} persons")
         return result_df
     
     def _get_death_dates(self) -> pd.DataFrame:
