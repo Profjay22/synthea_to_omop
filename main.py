@@ -67,6 +67,8 @@ class SyntheaToOMOPPipeline:
                     success = self._process_observation_table()
                 elif table == 'observation_period':
                     success = self._process_observation_period_table()
+                elif table == 'procedure_occurrence':
+                    success = self._process_procedure_occurrence_table()
                 # Also add to the run_pipeline method:
                 else:
                     self.logger.warning(f"⚠️ Table {table} not implemented yet")
@@ -507,6 +509,64 @@ class SyntheaToOMOPPipeline:
             self.stats['errors'].append(f"Observation period: {str(e)}")
             return False
     
+    def _process_procedure_occurrence_table(self) -> bool:
+        """Process procedure_occurrence table from procedure data and observation procedure data"""
+        try:
+            self.clear_procedure_occurrence_table()
+            
+            all_procedures = []
+            
+            # Process procedure source data
+            self.logger.info("📥 Extracting procedure data...")
+            procedures_df = self.extractor.get_procedures()
+            
+            if not procedures_df.empty:
+                self.logger.info(f"✅ Extracted {len(procedures_df)} procedure records")
+                
+                from src.transformers.procedure_occurrence_transformer import ProcedureOccurrenceTransformer
+                transformer = ProcedureOccurrenceTransformer(self.db_manager)
+                
+                omop_procedures = transformer.transform_procedures(procedures_df)
+                if not omop_procedures.empty:
+                    all_procedures.append(omop_procedures)
+                    self.logger.info(f"✅ Transformed {len(omop_procedures)} procedure records")
+            
+            # Process observation data for procedures (CATEGORY='procedure')
+            self.logger.info("📥 Extracting observation data for procedures...")
+            observations_df = self.extractor.get_observations()
+            
+            if not observations_df.empty:
+                transformer = ProcedureOccurrenceTransformer(self.db_manager)
+                omop_obs_procedures = transformer.transform_observation_procedures(observations_df)
+                
+                if not omop_obs_procedures.empty:
+                    all_procedures.append(omop_obs_procedures)
+                    self.logger.info(f"✅ Transformed {len(omop_obs_procedures)} observation procedures")
+            
+            # Combine all procedure data
+            if not all_procedures:
+                self.logger.error("❌ No procedure data to process")
+                return False
+            
+            combined_procedures = pd.concat(all_procedures, ignore_index=True)
+            self.logger.info(f"✅ Combined total: {len(combined_procedures)} procedure occurrence records")
+            
+            # Load to database
+            from src.loaders.procedure_occurrence_loader import ProcedureOccurrenceLoader
+            loader = ProcedureOccurrenceLoader(self.db_manager)
+
+            if not loader.load_procedure_occurrences(combined_procedures, batch_size=100):
+                return False
+
+            loader.verify_data()
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Procedure occurrence table processing failed: {e}")
+            self.stats['errors'].append(f"Procedure occurrence: {str(e)}")
+            return False
+
+    
 
     def _show_sample_patient(self, patients_df):
         sample = patients_df.iloc[0]
@@ -630,6 +690,18 @@ class SyntheaToOMOPPipeline:
             self.logger.info("✅ Observation period table cleared")
         except Exception as e:
             self.logger.error(f"❌ Clear failed: {e}")
+    
+    def clear_procedure_occurrence_table(self):
+        self.logger.info("🧹 Clearing procedure_occurrence table...")
+        try:
+            schema = self.db_config.schema_cdm
+            with self.db_manager.engine.begin() as conn:
+                # Use DELETE instead of TRUNCATE to avoid foreign key issues
+                conn.execute(text(f"DELETE FROM {schema}.procedure_occurrence"))
+            self.logger.info("✅ Procedure occurrence table cleared")
+        except Exception as e:
+            self.logger.error(f"❌ Clear failed: {e}")
+
 
     
 def main():
