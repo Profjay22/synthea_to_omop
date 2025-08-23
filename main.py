@@ -71,6 +71,9 @@ class SyntheaToOMOPPipeline:
                     success = self._process_procedure_occurrence_table()
                 elif table == 'death':
                     success = self._process_death_table()
+                elif table == 'drug_exposure':
+                    success = self._process_drug_exposure_table()
+
                 # Also add to the run_pipeline method:
                 else:
                     self.logger.warning(f"⚠️ Table {table} not implemented yet")
@@ -617,6 +620,66 @@ class SyntheaToOMOPPipeline:
             self.logger.error(f"❌ Death table processing failed: {e}")
             self.stats['errors'].append(f"Death: {str(e)}")
             return False
+        
+    
+    def _process_drug_exposure_table(self) -> bool:
+        """Process drug_exposure table from medication and immunization data"""
+        try:
+            self.clear_drug_exposure_table()
+            
+            all_drug_exposures = []
+            
+            # Process medication source data
+            self.logger.info("📥 Extracting medication data...")
+            medications_df = self.extractor.get_medications()
+            
+            if not medications_df.empty:
+                self.logger.info(f"✅ Extracted {len(medications_df)} medication records")
+                
+                from src.transformers.drug_exposure_transformer import DrugExposureTransformer
+                transformer = DrugExposureTransformer(self.db_manager)
+                
+                omop_medications = transformer.transform_medications(medications_df)
+                if not omop_medications.empty:
+                    all_drug_exposures.append(omop_medications)
+                    self.logger.info(f"✅ Transformed {len(omop_medications)} medication drug exposures")
+            
+            # Process immunization data
+            self.logger.info("📥 Extracting immunization data...")
+            immunizations_df = self.extractor.get_immunizations()
+            
+            if not immunizations_df.empty:
+                self.logger.info(f"✅ Extracted {len(immunizations_df)} immunization records")
+                
+                transformer = DrugExposureTransformer(self.db_manager)
+                omop_immunizations = transformer.transform_immunizations(immunizations_df)
+                
+                if not omop_immunizations.empty:
+                    all_drug_exposures.append(omop_immunizations)
+                    self.logger.info(f"✅ Transformed {len(omop_immunizations)} immunization drug exposures")
+            
+            # Combine all drug exposure data
+            if not all_drug_exposures:
+                self.logger.error("❌ No drug exposure data to process")
+                return False
+            
+            combined_drug_exposures = pd.concat(all_drug_exposures, ignore_index=True)
+            self.logger.info(f"✅ Combined total: {len(combined_drug_exposures)} drug exposure records")
+            
+            # Load to database
+            from src.loaders.drug_exposure_loader import DrugExposureLoader
+            loader = DrugExposureLoader(self.db_manager)
+            
+            if not loader.load_drug_exposures(combined_drug_exposures, batch_size=150):
+                return False
+            
+            loader.verify_data()
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Drug exposure table processing failed: {e}")
+            self.stats['errors'].append(f"Drug exposure: {str(e)}")
+            return False
 
     def _show_sample_patient(self, patients_df):
         sample = patients_df.iloc[0]
@@ -760,6 +823,17 @@ class SyntheaToOMOPPipeline:
                 # Use DELETE instead of TRUNCATE to avoid foreign key issues
                 conn.execute(text(f"DELETE FROM {schema}.death"))
             self.logger.info("✅ Death table cleared")
+        except Exception as e:
+            self.logger.error(f"❌ Clear failed: {e}")
+    
+    def clear_drug_exposure_table(self):
+        self.logger.info("🧹 Clearing drug_exposure table...")
+        try:
+            schema = self.db_config.schema_cdm
+            with self.db_manager.engine.begin() as conn:
+                # Use DELETE instead of TRUNCATE to avoid foreign key issues
+                conn.execute(text(f"DELETE FROM {schema}.drug_exposure"))
+            self.logger.info("✅ Drug exposure table cleared")
         except Exception as e:
             self.logger.error(f"❌ Clear failed: {e}")
 
