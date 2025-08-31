@@ -73,7 +73,8 @@ class SyntheaToOMOPPipeline:
                     success = self._process_death_table()
                 elif table == 'drug_exposure':
                     success = self._process_drug_exposure_table()
-
+                elif table == 'measurement':
+                    success = self._process_measurement_table()
                 # Also add to the run_pipeline method:
                 else:
                     self.logger.warning(f"⚠️ Table {table} not implemented yet")
@@ -680,6 +681,48 @@ class SyntheaToOMOPPipeline:
             self.logger.error(f"❌ Drug exposure table processing failed: {e}")
             self.stats['errors'].append(f"Drug exposure: {str(e)}")
             return False
+    
+    def _process_measurement_table(self) -> bool:
+        """Process measurement table from observation data (lab tests, vitals, clinical measurements)"""
+        try:
+            self.clear_measurement_table()
+            
+            # Extract observation data for measurements
+            self.logger.info("📥 Extracting observation data for measurements...")
+            observations_df = self.extractor.get_observations()
+            
+            if observations_df.empty:
+                self.logger.error("❌ No observation data found")
+                return False
+            
+            self.logger.info(f"✅ Extracted {len(observations_df)} observation records")
+            
+            # Transform to measurement data
+            from src.transformers.measurement_transformer import MeasurementTransformer
+            transformer = MeasurementTransformer(self.db_manager)
+            
+            omop_measurements = transformer.transform(observations_df)
+            
+            if omop_measurements.empty:
+                self.logger.error("❌ No measurement records after transformation")
+                return False
+            
+            self.logger.info(f"✅ Transformed {len(omop_measurements)} measurement records")
+            
+            # Load to database
+            from src.loaders.measurement_loader import MeasurementLoader
+            loader = MeasurementLoader(self.db_manager)
+            
+            if not loader.load_measurements(omop_measurements, batch_size=200):
+                return False
+            
+            loader.verify_data()
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Measurement table processing failed: {e}")
+            self.stats['errors'].append(f"Measurement: {str(e)}")
+            return False
 
     def _show_sample_patient(self, patients_df):
         sample = patients_df.iloc[0]
@@ -836,9 +879,17 @@ class SyntheaToOMOPPipeline:
             self.logger.info("✅ Drug exposure table cleared")
         except Exception as e:
             self.logger.error(f"❌ Clear failed: {e}")
+    def clear_measurement_table(self):
+        self.logger.info("🧹 Clearing measurement table...")
+        try:
+            schema = self.db_config.schema_cdm
+            with self.db_manager.engine.begin() as conn:
+                # Use DELETE instead of TRUNCATE to avoid foreign key issues
+                conn.execute(text(f"DELETE FROM {schema}.measurement"))
+            self.logger.info("✅ Measurement table cleared")
+        except Exception as e:
+            self.logger.error(f"❌ Clear failed: {e}")
 
-
-    
 def main():
     parser = argparse.ArgumentParser(description='Synthea to OMOP ETL Pipeline')
     parser.add_argument('--test', action='store_true', help='Run in test mode (small sample)')
