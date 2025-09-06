@@ -894,30 +894,60 @@ def main():
     parser = argparse.ArgumentParser(description='Synthea to OMOP ETL Pipeline')
     parser.add_argument('--test', action='store_true', help='Run in test mode (small sample)')
     parser.add_argument('--clear', action='store_true', help='Clear tables before running')
+    parser.add_argument('--all', action='store_true', help='Run complete pipeline with all tables')
     parser.add_argument('--tables', nargs='+', default=['person'], help='Tables to process (default: person)')
     parser.add_argument('--batch-size', type=int, default=500, help='Batch size for processing (default: 500)')
 
     args = parser.parse_args()
 
+    # Define the complete pipeline order
+    ALL_TABLES = [
+        'person',
+        'location', 
+        'care_site',
+        'provider',
+        'visit_occurrence',
+        'update_person',
+        'condition_occurrence',
+        'observation',
+        'observation_period',
+        'procedure_occurrence',
+        'death',
+        'drug_exposure',
+        'measurement'
+    ]
+
+    # Determine which tables to process
+    if args.all:
+        tables_to_process = ALL_TABLES
+        print("Running complete pipeline with all tables")
+    else:
+        tables_to_process = args.tables
+
     pipeline = SyntheaToOMOPPipeline(test_mode=args.test, batch_size=args.batch_size)
 
+    # Clear tables if requested
     if args.clear:
-        if 'person' in args.tables:
-            pipeline.clear_person_table()
-        if 'location' in args.tables:
-            pipeline.clear_location_table()
-        if 'care_site' in args.tables:
-            pipeline.clear_care_site_table()
-        if 'provider' in args.tables:
-            pipeline.clear_provider_table()
+        if args.all:
+            # Clear all tables in reverse order to avoid foreign key constraints
+            reverse_tables = [t for t in reversed(ALL_TABLES) if t != 'update_person']
+            print("Clearing all tables in dependency order...")
+            for table in reverse_tables:
+                if hasattr(pipeline, f'clear_{table}_table'):
+                    getattr(pipeline, f'clear_{table}_table')()
+        else:
+            print("Clearing specified tables...")
+            for table in tables_to_process:
+                if hasattr(pipeline, f'clear_{table}_table'):
+                    getattr(pipeline, f'clear_{table}_table')()
 
-    success = pipeline.run_pipeline(tables_to_process=args.tables)
+    success = pipeline.run_pipeline(tables_to_process=tables_to_process)
 
     if success:
-        print("\n✅ ETL Pipeline completed successfully!")
-        print("👉 Check DataGrip to verify your data")
+        print("\nETL Pipeline completed successfully!")
+        print("Check DataGrip to verify your data")
     else:
-        print("\n❌ ETL Pipeline failed")
+        print("\nETL Pipeline failed")
         exit(1)
 
 if __name__ == "__main__":
