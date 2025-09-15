@@ -80,7 +80,7 @@ Download the OMOP vocabulary from [Athena](https://athena.ohdsi.org/):
 
 ```bash
 git clone <repository-url>
-cd synthea-to-omop-pipeline
+cd synthea_to_omop
 ```
 
 ### 2. Create Virtual Environment
