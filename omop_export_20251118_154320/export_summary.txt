@@ -1,0 +1,24 @@
+OMOP Database Export Summary
+========================================
+Export Date: 2025-11-18 15:43:21
+Database Schema: test_again
+Output Directory: omop_export_20251118_154320
+
+Table Export Results:
+----------------------------------------
+person                         2,000 rows   ✓
+location                       2,433 rows   ✓
+care_site                        451 rows   ✓
+provider                         451 rows   ✓
+visit_occurrence              19,391 rows   ✓
+condition_occurrence              28 rows   ✓
+observation                   61,545 rows   ✓
+observation_period             EMPTY        -
+procedure_occurrence           1,282 rows   ✓
+death                              2 rows   ✓
+drug_exposure                 26,260 rows   ✓
+measurement                      245 rows   ✓
+----------------------------------------
+Total Tables: 12
+Successful: 12
+Total Rows Exported: 114,088
