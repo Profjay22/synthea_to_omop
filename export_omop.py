@@ -26,7 +26,7 @@ class OMOPExporter:
         self.omop_tables = [
             'person',
             'location',
-            'care_site', 
+            'care_site',
             'provider',
             'visit_occurrence',
             'condition_occurrence',
@@ -35,7 +35,10 @@ class OMOPExporter:
             'procedure_occurrence',
             'death',
             'drug_exposure',
-            'measurement'
+            'measurement',
+            'condition_era',
+            'drug_era',
+            'dose_era'
         ]
         
         self.export_stats = {}

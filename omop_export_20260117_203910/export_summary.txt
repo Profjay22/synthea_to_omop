@@ -1,0 +1,27 @@
+OMOP Database Export Summary
+========================================
+Export Date: 2026-01-17 20:39:14
+Database Schema: test_vocab
+Output Directory: omop_export_20260117_203910
+
+Table Export Results:
+----------------------------------------
+person                         2,865 rows   ✓
+location                       3,328 rows   ✓
+care_site                        476 rows   ✓
+provider                         476 rows   ✓
+visit_occurrence              37,126 rows   ✓
+condition_occurrence           2,614 rows   ✓
+observation                   86,296 rows   ✓
+observation_period             2,865 rows   ✓
+procedure_occurrence          18,594 rows   ✓
+death                            115 rows   ✓
+drug_exposure                 40,784 rows   ✓
+measurement                   89,429 rows   ✓
+condition_era                  2,614 rows   ✓
+drug_era                      38,391 rows   ✓
+dose_era                      38,391 rows   ✓
+----------------------------------------
+Total Tables: 15
+Successful: 15
+Total Rows Exported: 364,364
