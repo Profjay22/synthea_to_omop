@@ -35,10 +35,8 @@ class ProviderTransformer:
             "F": 8532
         }).fillna(0).astype(int)
 
-        # Match location (foreign key lookup)
-        df["location_id"] = df.apply(self._lookup_location_id, axis=1)
-
         # Convert organization UUID to care_site_id (direct mapping - no lookup needed)
+        # Note: In OMOP CDM, provider links to location through care_site, not directly
         df["care_site_id"] = df["organization_uuid"].apply(
             lambda x: self._uuid_to_int(x) if pd.notna(x) and x != "" else None
         )
@@ -50,8 +48,7 @@ class ProviderTransformer:
             "specialty_source_value",
             "gender_concept_id",
             "gender_source_value",
-            "care_site_id",
-            "location_id"
+            "care_site_id"
         ]].copy()
 
         return df_omop
@@ -67,6 +64,12 @@ class ProviderTransformer:
 
     def _lookup_location_id(self, row):
         """Lookup location_id using address information (foreign key)"""
+        # Apply same truncation as LocationTransformer to ensure matching
+        address = str(row["ADDRESS"])[:50] if pd.notna(row["ADDRESS"]) else ""
+        city = str(row["CITY"])[:50] if pd.notna(row["CITY"]) else ""
+        state = str(row["STATE"])[:2] if pd.notna(row["STATE"]) else ""
+        zip_code = str(row["ZIP"]).zfill(5)[:5] if pd.notna(row["ZIP"]) else ""
+
         query = f"""
             SELECT location_id FROM {self.db_manager.config.schema_cdm}.location
             WHERE address_1 = %(address)s
@@ -77,10 +80,10 @@ class ProviderTransformer:
         """
         try:
             result = self.db_manager.execute_query(query, {
-                "address": row["ADDRESS"],
-                "city": row["CITY"],
-                "state": row["STATE"],
-                "zip": row["ZIP"]
+                "address": address,
+                "city": city,
+                "state": state,
+                "zip": zip_code
             })
 
             if not result.empty:

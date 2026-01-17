@@ -75,7 +75,12 @@ class SyntheaToOMOPPipeline:
                     success = self._process_drug_exposure_table()
                 elif table == 'measurement':
                     success = self._process_measurement_table()
-                # Also add to the run_pipeline method:
+                elif table == 'condition_era':
+                    success = self._process_condition_era_table()
+                elif table == 'drug_era':
+                    success = self._process_drug_era_table()
+                elif table == 'dose_era':
+                    success = self._process_dose_era_table()
                 else:
                     self.logger.warning(f"⚠️ Table {table} not implemented yet")
                     continue
@@ -724,6 +729,96 @@ class SyntheaToOMOPPipeline:
             self.stats['errors'].append(f"Measurement: {str(e)}")
             return False
 
+    def _process_condition_era_table(self) -> bool:
+        """Process condition_era table - derived from condition_occurrence data"""
+        try:
+            self.clear_condition_era_table()
+            self.logger.info("🔄 Building condition eras from condition_occurrence...")
+
+            from src.transformers.condition_era_transformer import ConditionEraTransformer
+            transformer = ConditionEraTransformer(self.db_manager)
+            condition_eras = transformer.transform()
+
+            if condition_eras.empty:
+                self.logger.warning("⚠️ No condition eras generated")
+                return True  # Not an error, just no data
+
+            self.logger.info(f"✅ Generated {len(condition_eras)} condition eras")
+
+            from src.loaders.condition_era_loader import ConditionEraLoader
+            loader = ConditionEraLoader(self.db_manager)
+
+            if not loader.load_condition_eras(condition_eras, batch_size=500):
+                return False
+
+            loader.verify_data()
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Condition era table processing failed: {e}")
+            self.stats['errors'].append(f"Condition era: {str(e)}")
+            return False
+
+    def _process_drug_era_table(self) -> bool:
+        """Process drug_era table - derived from drug_exposure data"""
+        try:
+            self.clear_drug_era_table()
+            self.logger.info("🔄 Building drug eras from drug_exposure...")
+
+            from src.transformers.drug_era_transformer import DrugEraTransformer
+            transformer = DrugEraTransformer(self.db_manager)
+            drug_eras = transformer.transform()
+
+            if drug_eras.empty:
+                self.logger.warning("⚠️ No drug eras generated")
+                return True  # Not an error, just no data
+
+            self.logger.info(f"✅ Generated {len(drug_eras)} drug eras")
+
+            from src.loaders.drug_era_loader import DrugEraLoader
+            loader = DrugEraLoader(self.db_manager)
+
+            if not loader.load_drug_eras(drug_eras, batch_size=500):
+                return False
+
+            loader.verify_data()
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Drug era table processing failed: {e}")
+            self.stats['errors'].append(f"Drug era: {str(e)}")
+            return False
+
+    def _process_dose_era_table(self) -> bool:
+        """Process dose_era table - derived from drug_exposure data with dose info"""
+        try:
+            self.clear_dose_era_table()
+            self.logger.info("🔄 Building dose eras from drug_exposure...")
+
+            from src.transformers.dose_era_transformer import DoseEraTransformer
+            transformer = DoseEraTransformer(self.db_manager)
+            dose_eras = transformer.transform()
+
+            if dose_eras.empty:
+                self.logger.warning("⚠️ No dose eras generated (may not have dose data)")
+                return True  # Not an error, just no data
+
+            self.logger.info(f"✅ Generated {len(dose_eras)} dose eras")
+
+            from src.loaders.dose_era_loader import DoseEraLoader
+            loader = DoseEraLoader(self.db_manager)
+
+            if not loader.load_dose_eras(dose_eras, batch_size=500):
+                return False
+
+            loader.verify_data()
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Dose era table processing failed: {e}")
+            self.stats['errors'].append(f"Dose era: {str(e)}")
+            return False
+
     def _show_sample_patient(self, patients_df):
         sample = patients_df.iloc[0]
         self.logger.info("📋 Sample source patient:")
@@ -890,6 +985,36 @@ class SyntheaToOMOPPipeline:
         except Exception as e:
             self.logger.error(f"❌ Clear failed: {e}")
 
+    def clear_condition_era_table(self):
+        self.logger.info("🧹 Clearing condition_era table...")
+        try:
+            schema = self.db_config.schema_cdm
+            with self.db_manager.engine.begin() as conn:
+                conn.execute(text(f"DELETE FROM {schema}.condition_era"))
+            self.logger.info("✅ Condition era table cleared")
+        except Exception as e:
+            self.logger.error(f"❌ Clear failed: {e}")
+
+    def clear_drug_era_table(self):
+        self.logger.info("🧹 Clearing drug_era table...")
+        try:
+            schema = self.db_config.schema_cdm
+            with self.db_manager.engine.begin() as conn:
+                conn.execute(text(f"DELETE FROM {schema}.drug_era"))
+            self.logger.info("✅ Drug era table cleared")
+        except Exception as e:
+            self.logger.error(f"❌ Clear failed: {e}")
+
+    def clear_dose_era_table(self):
+        self.logger.info("🧹 Clearing dose_era table...")
+        try:
+            schema = self.db_config.schema_cdm
+            with self.db_manager.engine.begin() as conn:
+                conn.execute(text(f"DELETE FROM {schema}.dose_era"))
+            self.logger.info("✅ Dose era table cleared")
+        except Exception as e:
+            self.logger.error(f"❌ Clear failed: {e}")
+
 def main():
     parser = argparse.ArgumentParser(description='Synthea to OMOP ETL Pipeline')
     parser.add_argument('--test', action='store_true', help='Run in test mode (small sample)')
@@ -900,21 +1025,25 @@ def main():
 
     args = parser.parse_args()
 
-    # Define the complete pipeline order
+    # Define the complete pipeline order (parent tables first, then child tables)
+    # FK dependencies: location -> care_site -> provider -> person -> visits/events -> eras
     ALL_TABLES = [
-        'person',
-        'location', 
-        'care_site',
-        'provider',
-        'visit_occurrence',
-        'update_person',
+        'location',          # No FK dependencies
+        'care_site',         # FK to location
+        'provider',          # FK to location, care_site
+        'person',            # FK to location, provider, care_site
+        'visit_occurrence',  # FK to person, provider, care_site
+        'update_person',     # Updates person assignments from visits
         'condition_occurrence',
         'observation',
         'observation_period',
         'procedure_occurrence',
         'death',
         'drug_exposure',
-        'measurement'
+        'measurement',
+        'condition_era',     # Derived from condition_occurrence
+        'drug_era',          # Derived from drug_exposure
+        'dose_era'           # Derived from drug_exposure with dose info
     ]
 
     # Determine which tables to process
@@ -929,10 +1058,27 @@ def main():
     # Clear tables if requested
     if args.clear:
         if args.all:
-            # Clear all tables in reverse order to avoid foreign key constraints
-            reverse_tables = [t for t in reversed(ALL_TABLES) if t != 'update_person']
+            # Clear order respects FK constraints: child tables first, then parent tables
+            # Era tables are derived and have no dependents, so clear them first
+            clear_order = [
+                'dose_era',         # Derived table, no dependents
+                'drug_era',         # Derived table, no dependents
+                'condition_era',    # Derived table, no dependents
+                'measurement',
+                'drug_exposure',
+                'death',
+                'procedure_occurrence',
+                'observation_period',
+                'observation',
+                'condition_occurrence',
+                'visit_occurrence',
+                'person',           # person references location, provider, care_site
+                'provider',         # provider references location, care_site
+                'care_site',        # care_site references location
+                'location'
+            ]
             print("Clearing all tables in dependency order...")
-            for table in reverse_tables:
+            for table in clear_order:
                 if hasattr(pipeline, f'clear_{table}_table'):
                     getattr(pipeline, f'clear_{table}_table')()
         else:
